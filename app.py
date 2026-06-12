@@ -5,6 +5,10 @@ import os
 import time
 import folium
 from streamlit_folium import st_folium
+import pytz  # <--- Librería para controlar zonas horarias
+
+# Configuración de la zona horaria de Chile
+zona_cl = pytz.timezone('America/Santiago')
 
 # Configuración de la página para celulares
 st.set_page_config(
@@ -48,7 +52,6 @@ if "n_punto" not in st.session_state:
 if "estado_brigada" not in st.session_state:
     st.session_state.estado_brigada = "INICIO_DIA"
 if "last_clicked" not in st.session_state:
-    # Coordenadas base por defecto: Graneros/Rancagua
     st.session_state.last_clicked = {"lat": -34.0601, "lng": -70.7891} 
 
 if "timestamps" not in st.session_state:
@@ -71,7 +74,8 @@ if lector != "":
     if st.session_state.estado_brigada == "INICIO_DIA":
         st.info("🚚 La brigada está ready. Presiona cuando el móvil comience a moverse hacia el primer punto.")
         if st.button("🚀 Iniciar Traslado hacia Punto " + str(st.session_state.n_punto)):
-            st.session_state.timestamps["inicio_traslado"] = datetime.now()
+            # Captura hora local de Chile
+            st.session_state.timestamps["inicio_traslado"] = datetime.now(zona_cl)
             st.session_state.estado_brigada = "TRASLADO"
             st.rerun()
 
@@ -83,7 +87,8 @@ if lector != "":
         st.warning(f"🚚 El móvil va en camino hacia el **Punto {st.session_state.n_punto}** (Salió a las {hora_salida})")
         
         if st.button("🏁 Llegada al Punto (Marcar Hora de Arribo)"):
-            st.session_state.timestamps["llegada_punto"] = datetime.now()
+            # Captura hora local de Chile
+            st.session_state.timestamps["llegada_punto"] = datetime.now(zona_cl)
             st.session_state.estado_brigada = "EN_PUNTO"
             st.rerun()
 
@@ -97,23 +102,19 @@ if lector != "":
         st.markdown("### 🗺️ ¿Dónde estás exactamente?")
         st.caption("Toca el mapa en el lugar exacto del medidor para clavar el pin de geolocalización.")
         
-        # Crear mapa interactivo con Folium
         m = folium.Map(
             location=[st.session_state.last_clicked["lat"], st.session_state.last_clicked["lng"]], 
             zoom_start=15
         )
         
-        # Añadir marcador en la posición actual seleccionada
         folium.Marker(
             [st.session_state.last_clicked["lat"], st.session_state.last_clicked["lng"]],
             popup="Ubicación Medidor",
             icon=folium.Icon(color="red", icon="bolt", prefix="fa")
         ).add_to(m)
         
-        # Renderizar el mapa en Streamlit y capturar clicks del usuario
         map_data = st_folium(m, width=700, height=300, key="mapa_interactivo")
         
-        # Si el usuario hace click en otra parte del mapa, actualizamos el pin
         if map_data and map_data.get("last_clicked"):
             click_lat = map_data["last_clicked"]["lat"]
             click_lng = map_data["last_clicked"]["lng"]
@@ -121,39 +122,36 @@ if lector != "":
                 st.session_state.last_clicked = {"lat": click_lat, "lng": click_lng}
                 st.rerun()
         
-        # Mostrar coordenadas seleccionadas para tranquilidad del usuario
         st.write(f"📍 Coordenadas seleccionadas: `{round(st.session_state.last_clicked['lat'], 5)}, {round(st.session_state.last_clicked['lng'], 5)}`")
 
         st.markdown("### Captura de Datos")
         n_medidor = st.text_input("N° de Medidor (Instalación) *", help="Ingrese solo números")
         n_medidor = "".join(filter(str.isdigit, n_medidor))
         
-        # Cámara obligatoria en vivo (Bloquea archivos de la galería)
         foto = st.camera_input("Tomar FOTO EN VIVO del medidor *")
         
         if st.button("💾 Finalizar Lectura y Guardar Registro"):
             if not n_medidor or foto is None:
                 st.error("❌ Error: Debes ingresar el medidor y tomar la foto en vivo antes de finalizar.")
             else:
-                st.session_state.timestamps["fin_punto"] = datetime.now()
+                # Captura hora local de Chile
+                st.session_state.timestamps["fin_punto"] = datetime.now(zona_cl)
                 
-                # --- PROCESAMIENTO Y CÁLCULO DE TIEMPOS EN HORAS ---
                 t_inicio_traslado = st.session_state.timestamps["inicio_traslado"]
                 t_llegada = st.session_state.timestamps["llegada_punto"]
                 t_fin = st.session_state.timestamps["fin_punto"]
                 
+                # Al estar ambas en la misma zona horaria, la resta de HH funcionará perfecto
                 horas_traslado = round((t_llegada - t_inicio_traslado).total_seconds() / 3600, 3)
                 horas_permanencia = round((t_fin - t_llegada).total_seconds() / 3600, 3)
                 
                 id_unico = f"{lector.replace(' ', '_')}_{t_fin.strftime('%Y%m%d%H%M%S')}"
                 
-                # Guardar foto física
                 ruta_foto = f"fotos_medidores/{id_unico}.jpg"
                 os.makedirs("fotos_medidores", exist_ok=True)
                 with open(ruta_foto, "wb") as f:
                     f.write(foto.getbuffer())
                 
-                # Armar el registro definitivo con ubicación real capturada
                 nuevo_registro = {
                     "ID_Registro": [id_unico],
                     "Gestor": [lector],
@@ -175,7 +173,7 @@ if lector != "":
                 df.to_csv(archivo_datos, mode='a', index=False, header=not file_exists, encoding='utf-8-sig')
                 
                 st.session_state.estado_brigada = "REGISTRADO"
-                st.success(f"✅ Punto {st.session_state.n_punto} guardado en coordenadas exactas.")
+                st.success(f"✅ Punto {st.session_state.n_punto} guardado correctamente.")
                 st.balloons()
                 time.sleep(2)
                 st.rerun()
@@ -184,14 +182,15 @@ if lector != "":
     # ESTADO 3: REGISTRADO / CONTINÚAN EN TERRENO
     # ------------------------------------------------------------------
     elif st.session_state.estado_brigada == "REGISTRADO":
-        st.info(f"✔️ El **Punto {st.session_state.n_punto}** ya fue cerrado con éxito. La brigada sigue activa en terreno.")
+        st.info(f"✔️ El **Punto {st.session_state.n_punto}** ya fue cerrado con éxito.")
         
         col1, col2 = st.columns(2)
         
         with col1:
             if st.button("➡ Iniciar Traslado al Siguiente Punto"):
                 st.session_state.n_punto += 1
-                st.session_state.timestamps["inicio_traslado"] = datetime.now()
+                # Dejar listo el estado con valores limpios
+                st.session_state.timestamps["inicio_traslado"] = datetime.now(zona_cl)
                 st.session_state.timestamps["llegada_punto"] = None
                 st.session_state.timestamps["fin_punto"] = None
                 st.session_state.estado_brigada = "TRASLADO"
@@ -201,8 +200,7 @@ if lector != "":
             if st.button("⏹ Finalizar Jornada Completa"):
                 st.session_state.n_punto = 1
                 st.session_state.estado_brigada = "INICIO_DIA"
-                # Volver a centrar mapa para el día siguiente
                 st.session_state.last_clicked = {"lat": -34.0601, "lng": -70.7891}
-                st.success("Jornada cerrada correctamente. ¡Buen viaje de regreso!")
+                st.success("Jornada cerrada correctamente.")
                 time.sleep(2)
                 st.rerun()
