@@ -67,7 +67,6 @@ def guardar_registro_en_github(nuevo_registro_dict):
         "Accept": "application/vnd.github.v3+json"
     }
     
-    # Intentar obtener el archivo existente
     respuesta = requests.get(URL_API, headers=headers)
     sha = None
     
@@ -82,7 +81,6 @@ def guardar_registro_en_github(nuevo_registro_dict):
     else:
         df_consolidado = pd.DataFrame(nuevo_registro_dict)
         
-    # Convertir a CSV con codificación correcta para Excel
     csv_datos = df_consolidado.to_csv(index=False, encoding='utf-8-sig')
     csv_b64 = base64.b64encode(csv_datos.encode('utf-8-sig')).decode('utf-8')
     
@@ -198,7 +196,6 @@ if lector != "":
                 
                 id_unico = f"{lector.replace(' ', '_')}_{t_fin.strftime('%Y%m%d%H%M%S')}"
                 
-                # Guardado local temporal de foto por si acaso
                 ruta_foto = f"fotos_medidores/{id_unico}.jpg"
                 os.makedirs("fotos_medidores", exist_ok=True)
                 with open(ruta_foto, "wb") as f:
@@ -214,4 +211,61 @@ if lector != "":
                     "Hora Fin Lectura": [t_fin.strftime("%Y-%m-%d %H:%M:%S")],
                     "Horas Traslado": [horas_traslado],
                     "Horas Permanencia (HH)": [horas_permanencia],
-                    "Ruta_Foto":
+                    "Ruta_Foto": [ruta_foto],
+                    "Latitud": [st.session_state.last_clicked["lat"]],
+                    "Longitud": [st.session_state.last_clicked["lng"]]
+                }
+                
+                with st.spinner("Guardando de forma permanente en GitHub..."):
+                    guardar_registro_en_github(nuevo_registro)
+                
+                st.session_state.estado_brigada = "REGISTRADO"
+                st.success(f"✅ Punto {st.session_state.n_punto} asegurado permanentemente en el repositorio.")
+                st.balloons()
+                time.sleep(2)
+                st.rerun()
+
+    # ESTADO 3: REGISTRADO
+    elif st.session_state.estado_brigada == "REGISTRADO":
+        st.info(f"✔️ El **Punto {st.session_state.n_punto}** ya fue cerrado con éxito.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("➡ Iniciar Traslado al Siguiente Punto"):
+                st.session_state.n_punto += 1
+                st.session_state.timestamps["inicio_traslado"] = datetime.now(zona_cl)
+                st.session_state.timestamps["llegada_punto"] = None
+                st.session_state.timestamps["fin_punto"] = None
+                st.session_state.estado_brigada = "TRASLADO"
+                st.rerun()
+                
+        with col2:
+            if st.button("⏹ Finalizar Jornada Completa"):
+                st.session_state.n_punto = 1
+                st.session_state.estado_brigada = "INICIO_DIA"
+                st.session_state.last_clicked = {"lat": -34.0601, "lng": -70.7891}
+                st.success("Jornada cerrada correctamente.")
+                time.sleep(2)
+                st.rerun()
+
+# ------------------------------------------------------------------
+# BLOQUE DE EXTRACCIÓN AUTOMÁTICO E HISTÓRICO
+# ------------------------------------------------------------------
+st.markdown("---")
+st.subheader("📊 Historial Acumulado en Servidor")
+
+df_historico = cargar_historial_desde_github()
+
+if df_historico is not None and len(df_historico) > 0:
+    st.dataframe(df_historico, use_container_width=True)
+    csv_data_download = df_historico.to_csv(index=False, encoding='utf-8-sig')
+    
+    st.download_button(
+        label="📥 Descargar Historial Completo (CSV)",
+        data=csv_data_download,
+        file_name="historico_rutas_terreno.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+else:
+    st.info("No hay puntos guardados históricamente en el repositorio todavía.")
