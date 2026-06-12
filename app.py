@@ -204,3 +204,34 @@ if lector != "":
                 st.success("Jornada cerrada correctamente.")
                 time.sleep(2)
                 st.rerun()
+
+
+import streamlit as st
+import pandas as pd
+
+# ... (Aquí va tu código anterior donde se guardan los datos en la lista o DataFrame) ...
+
+# Suponiendo que tus datos están en una lista de diccionarios o un DataFrame llamado st.session_state.datos:
+if "datos" in st.session_state and len(st.session_state.datos) > 0:
+    # 1. Convertimos los puntos registrados a un DataFrame de Pandas
+    df_exportar = pd.DataFrame(st.session_state.datos)
+    
+    # 2. Convertimos el DataFrame a CSV con codificación para que Excel lea bien los tildes y eñes
+    csv = df_exportar.to_csv(index=False, encoding='utf-8-sig-sep')
+    
+    st.markdown("---")
+    st.subheader("📊 Extracción de Datos de Terreno")
+    
+    # 3. Mostramos una pequeña tabla con la vista previa de los 2 puntos guardados
+    st.dataframe(df_exportar, use_container_width=True)
+    
+    # 4. El botón definitivo de descarga en CSV
+    st.download_button(
+        label="📥 Descargar datos en CSV",
+        data=csv,
+        file_name="registro_traslados_terreno.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+else:
+    st.info("Aínda no hay puntos registrados en esta jornada para extraer.")
