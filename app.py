@@ -5,7 +5,10 @@ import os
 import time
 import folium
 from streamlit_folium import st_folium
-import pytz  # <--- Librería para controlar zonas horarias
+import pytz
+import requests
+import base64
+from io import StringIO
 
 # Configuración de la zona horaria de Chile
 zona_cl = pytz.timezone('America/Santiago')
@@ -45,6 +48,64 @@ st.title("⚡ Control de Procesos y HH - AT")
 st.write("Seguimiento correlativo de traslados, tiempos y geolocalización en terreno.")
 
 # ------------------------------------------------------------------
+# CONFIGURACIÓN AUTOMÁTICA DE GITHUB (Asegurar persistencia)
+# ------------------------------------------------------------------
+try:
+    TOKEN = st.secrets["GITHUB_TOKEN"]
+    REPO = st.secrets["GITHUB_REPO"]
+except Exception:
+    st.error("❌ Faltan las credenciales 'GITHUB_TOKEN' y 'GITHUB_REPO' en los Secrets de Streamlit.")
+    st.stop()
+
+ARCHIVO_DATOS = "registro_piloto_at.csv"
+URL_API = f"https://api.github.com/repos/{REPO}/contents/{ARCHIVO_DATOS}"
+
+def guardar_registro_en_github(nuevo_registro_dict):
+    """Descarga el CSV actual de GitHub, le agrega la nueva fila y lo sube automáticamente"""
+    headers = {
+        "Authorization": f"token {TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    # Intentar obtener el archivo existente
+    respuesta = requests.get(URL_API, headers=headers)
+    sha = None
+    
+    if respuesta.status_code == 200:
+        datos_archivo = respuesta.json()
+        sha = datos_archivo["sha"]
+        contenido_b64 = datos_archivo["content"]
+        contenido_decodificado = base64.b64decode(contenido_b64).decode('utf-8-sig')
+        df_actual = pd.read_csv(StringIO(contenido_decodificado))
+        df_nuevo = pd.DataFrame(nuevo_registro_dict)
+        df_consolidado = pd.concat([df_actual, df_nuevo], ignore_index=True)
+    else:
+        df_consolidado = pd.DataFrame(nuevo_registro_dict)
+        
+    # Convertir a CSV con codificación correcta para Excel
+    csv_datos = df_consolidado.to_csv(index=False, encoding='utf-8-sig')
+    csv_b64 = base64.b64encode(csv_datos.encode('utf-8-sig')).decode('utf-8')
+    
+    datos_subida = {
+        "message": f"🤖 Registro automático: Punto por {nuevo_registro_dict['Gestor'][0]}",
+        "content": csv_b64
+    }
+    if sha:
+        datos_subida["sha"] = sha
+        
+    requests.put(URL_API, headers=headers, json=datos_subida)
+
+def cargar_historial_desde_github():
+    """Lee el archivo acumulado directamente desde GitHub de forma actualizada"""
+    headers = {"Authorization": f"token {TOKEN}"}
+    respuesta = requests.get(URL_API, headers=headers)
+    if respuesta.status_code == 200:
+        contenido_b64 = respuesta.json()["content"]
+        contenido_decodificado = base64.b64decode(contenido_b64).decode('utf-8-sig')
+        return pd.read_csv(StringIO(contenido_decodificado))
+    return None
+
+# ------------------------------------------------------------------
 # VARIABLES DE CONTROL DE ESTADO (Session State)
 # ------------------------------------------------------------------
 if "n_punto" not in st.session_state:
@@ -68,33 +129,25 @@ if lector != "":
     st.markdown("---")
     st.markdown(f"<div class='big-text'>📍 OPERACIÓN ACTUAL: PUNTO {st.session_state.n_punto}</div>", unsafe_allow_html=True)
     
-    # ------------------------------------------------------------------
-    # ESTADO 0: INICIO DEL DÍA / ESPERANDO PRIMER TRASLADO
-    # ------------------------------------------------------------------
+    # ESTADO 0: INICIO DEL DÍA
     if st.session_state.estado_brigada == "INICIO_DIA":
         st.info("🚚 La brigada está ready. Presiona cuando el móvil comience a moverse hacia el primer punto.")
         if st.button("🚀 Iniciar Traslado hacia Punto " + str(st.session_state.n_punto)):
-            # Captura hora local de Chile
             st.session_state.timestamps["inicio_traslado"] = datetime.now(zona_cl)
             st.session_state.estado_brigada = "TRASLADO"
             st.rerun()
 
-    # ------------------------------------------------------------------
-    # ESTADO 1: EN TRASLADO (Móvil en movimiento)
-    # ------------------------------------------------------------------
+    # ESTADO 1: EN TRASLADO
     elif st.session_state.estado_brigada == "TRASLADO":
         hora_salida = st.session_state.timestamps["inicio_traslado"].strftime("%H:%M:%S")
         st.warning(f"🚚 El móvil va en camino hacia el **Punto {st.session_state.n_punto}** (Salió a las {hora_salida})")
         
         if st.button("🏁 Llegada al Punto (Marcar Hora de Arribo)"):
-            # Captura hora local de Chile
             st.session_state.timestamps["llegada_punto"] = datetime.now(zona_cl)
             st.session_state.estado_brigada = "EN_PUNTO"
             st.rerun()
 
-    # ------------------------------------------------------------------
-    # ESTADO 2: EN PUNTO (Inspección, Mapa y Toma de Foto)
-    # ------------------------------------------------------------------
+    # ESTADO 2: EN PUNTO
     elif st.session_state.estado_brigada == "EN_PUNTO":
         hora_llegada = st.session_state.timestamps["llegada_punto"].strftime("%H:%M:%S")
         st.success(f"⏱️ Brigada trabajando en el **Punto {st.session_state.n_punto}** desde las {hora_llegada}")
@@ -134,19 +187,18 @@ if lector != "":
             if not n_medidor or foto is None:
                 st.error("❌ Error: Debes ingresar el medidor y tomar la foto en vivo antes de finalizar.")
             else:
-                # Captura hora local de Chile
                 st.session_state.timestamps["fin_punto"] = datetime.now(zona_cl)
                 
                 t_inicio_traslado = st.session_state.timestamps["inicio_traslado"]
                 t_llegada = st.session_state.timestamps["llegada_punto"]
                 t_fin = st.session_state.timestamps["fin_punto"]
                 
-                # Al estar ambas en la misma zona horaria, la resta de HH funcionará perfecto
                 horas_traslado = round((t_llegada - t_inicio_traslado).total_seconds() / 3600, 3)
                 horas_permanencia = round((t_fin - t_llegada).total_seconds() / 3600, 3)
                 
                 id_unico = f"{lector.replace(' ', '_')}_{t_fin.strftime('%Y%m%d%H%M%S')}"
                 
+                # Guardado local temporal de foto por si acaso
                 ruta_foto = f"fotos_medidores/{id_unico}.jpg"
                 os.makedirs("fotos_medidores", exist_ok=True)
                 with open(ruta_foto, "wb") as f:
@@ -162,76 +214,4 @@ if lector != "":
                     "Hora Fin Lectura": [t_fin.strftime("%Y-%m-%d %H:%M:%S")],
                     "Horas Traslado": [horas_traslado],
                     "Horas Permanencia (HH)": [horas_permanencia],
-                    "Ruta_Foto": [ruta_foto],
-                    "Latitud": [st.session_state.last_clicked["lat"]],
-                    "Longitud": [st.session_state.last_clicked["lng"]]
-                }
-                
-                df = pd.DataFrame(nuevo_registro)
-                archivo_datos = "registro_piloto_at.csv"
-                file_exists = os.path.isfile(archivo_datos)
-                df.to_csv(archivo_datos, mode='a', index=False, header=not file_exists, encoding='utf-8-sig')
-                
-                st.session_state.estado_brigada = "REGISTRADO"
-                st.success(f"✅ Punto {st.session_state.n_punto} guardado correctamente.")
-                st.balloons()
-                time.sleep(2)
-                st.rerun()
-
-    # ------------------------------------------------------------------
-    # ESTADO 3: REGISTRADO / CONTINÚAN EN TERRENO
-    # ------------------------------------------------------------------
-    elif st.session_state.estado_brigada == "REGISTRADO":
-        st.info(f"✔️ El **Punto {st.session_state.n_punto}** ya fue cerrado con éxito.")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("➡ Iniciar Traslado al Siguiente Punto"):
-                st.session_state.n_punto += 1
-                # Dejar listo el estado con valores limpios
-                st.session_state.timestamps["inicio_traslado"] = datetime.now(zona_cl)
-                st.session_state.timestamps["llegada_punto"] = None
-                st.session_state.timestamps["fin_punto"] = None
-                st.session_state.estado_brigada = "TRASLADO"
-                st.rerun()
-                
-        with col2:
-            if st.button("⏹ Finalizar Jornada Completa"):
-                st.session_state.n_punto = 1
-                st.session_state.estado_brigada = "INICIO_DIA"
-                st.session_state.last_clicked = {"lat": -34.0601, "lng": -70.7891}
-                st.success("Jornada cerrada correctamente.")
-                time.sleep(2)
-                st.rerun()
-
-
-import streamlit as st
-import pandas as pd
-
-# ... (Aquí va tu código anterior donde se guardan los datos en la lista o DataFrame) ...
-
-# Suponiendo que tus datos están en una lista de diccionarios o un DataFrame llamado st.session_state.datos:
-if "datos" in st.session_state and len(st.session_state.datos) > 0:
-    # 1. Convertimos los puntos registrados a un DataFrame de Pandas
-    df_exportar = pd.DataFrame(st.session_state.datos)
-    
-    # 2. Convertimos el DataFrame a CSV con codificación para que Excel lea bien los tildes y eñes
-    csv = df_exportar.to_csv(index=False, encoding='utf-8-sig-sep')
-    
-    st.markdown("---")
-    st.subheader("📊 Extracción de Datos de Terreno")
-    
-    # 3. Mostramos una pequeña tabla con la vista previa de los 2 puntos guardados
-    st.dataframe(df_exportar, use_container_width=True)
-    
-    # 4. El botón definitivo de descarga en CSV
-    st.download_button(
-        label="📥 Descargar datos en CSV",
-        data=csv,
-        file_name="registro_traslados_terreno.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-else:
-    st.info("Aínda no hay puntos registrados en esta jornada para extraer.")
+                    "Ruta_Foto":
